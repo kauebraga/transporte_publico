@@ -1,0 +1,304 @@
+---
+title: "Calculo de Medidas de Desempenho"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+```{r setup, echo = FALSE, warning=FALSE, message=FALSE, error=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, error=FALSE)
+
+library(dplyr)
+library(sf) #pra importar os dados espaciais e tal
+library(purrr)
+library(data.table)
+library(readr)
+library(tidyr)
+```
+
+# Quantidade de viagens utilizando o transporte coletivo por ônibus e por micro-ônibus (média das validações de dias úteis do ano de 2014 para o período entre 07:00 e 08:00)
+
+```{r}
+tabelas_resumo_int <- function(data) {
+    data <- read_csv(data) %>%
+      filter(as.character(momento) >= "07:00:00" & as.character(momento) < "08:00:00")
+    
+    data$nome_cartao <- iconv(data$nome_cartao, "UTF-8", "WINDOWS-1252")
+    
+    dia_correto <- Mode(as.character(data$dia))
+    
+    data <- data %>%
+      mutate(hora1 = lubridate::hour(momento),
+             dia1 = lubridate::day(dia),
+             linha = as.factor(linha),
+             tipo = if_else(nome_cartao %in% c("04-VALE TRANSPORTE", "12-VALE-TRANPORTE AVULSO", 
+                                            "08-VT IDENTIFICAÇÃO", "08-VT IDENTIFICA<c3><87><c3><83>O"), "Vale Transporte",
+                if_else(nome_cartao %in% c("02-ESTUDANTE ETUFOR", "11-ESTUDANTE COM DEBITO"), 
+                                            "Estudante",
+                ifelse(nome_cartao %in% c("GRATUIDADE IDENTIFIC. ETUFOR", "03-GRATUIDADE IDOSO",
+                                          "GRAT. DEFICIENTE - C/ACOMP", "GRAT. DEFICIENTE - S/ACOMP"),
+                                          "Gratuidade", nome_cartao))))
+    
+  vai <- data %>%
+    group_by(integracao, tipo) %>%
+    summarise(n=n()) %>%
+    spread(integracao, n, fill = 0) %>%
+    select(tipo, viagens = N, viagens_int = S) %>%
+    mutate(dia = dia_correto)
+  
+  
+return(vai)
+
+}
+
+# teste
+
+arquivos <- dir("data/bilhetagem", full.names = TRUE, pattern="*.csv")
+
+bora <- lapply(arquivos, tabelas_resumo_int)
+
+# funcao para juntar todos os dataframes da lista em um dataframe so
+
+tudo <- dplyr::bind_rows(bora)
+
+# salvar
+
+write_csv(tudo, "data/bilhetagem/resumos/total_viagens_tipo.csv")
+
+```
+
+
+# Tempo de Viagem
+
+Aqui utilizaremos o aplicativo gmapsdistanceR.
+
+```{r}
+library(gmapsdistance)
+library(gtools)
+
+#abrir pontos
+
+pontos_franco <- read.delim("pontos_franco.csv", sep= "\t") %>%
+  st_as_sf(coords = c("X", "Y"), crs = 32724) %>% # criar um objeto sf com os pontos e o crs 32724 (WGS84 UTM 24S)
+  st_transform(crs = 4326) # transformar  para crs 4326
+  
+coords <- st_coordinates(pontos_franco) #extrair as coordenadas
+
+# extrair para dataframe
+coords <- data.frame(GEOID = pontos_franco$ID, Y = coords[,"Y"], X = coords[,"X"])
+
+# extrar para format entendido pelo googlemapsr
+points <- data.frame(origem = paste(coords$Y, coords$X, sep="+"))
+
+# permutar
+
+combinations <- t(combn(points$origem, 2)) %>%
+  as.data.frame()
+
+fim <- data.frame(origem = combinations$.[1:3916], destino = combinations$.[3917:7832])
+
+
+# usando gmapsdistance ----------------------------------------------------
+
+# dataframe que veio la das medidas_de_desempenho.Rmd
+coords <- fim[1:50,]
+
+set.api.key("AIzaSyBJvWBakWOood-eQEA-Ril2KlabUsIJww0")
+
+#deu certo
+
+tempos <- gmapsdistance(as.character(coords$origem), as.character(coords$destino), 
+                        mode = "transit", shape="long")
+
+# usando map2 (bem mais rapido)
+
+epa <- map2(coords$origem, coords$destino, gmapsdistance, mode="driving")
+
+aff <- dplyr::bind_rows(epa)
+
+
+# usando googleway --------------------------------------------------------
+
+library(googleway)
+
+#transformar cada par de coordenada em uma lista (ou seja, transformar cada linha da tabela em uma lista)
+
+
+coords$GEOID <- NULL
+
+
+coords.list <- setNames(split(coords, seq(nrow(coords))), rownames(coords))
+
+#transformar lista de dataframes em lista de characteres
+
+coords.list.c <- purrr::map(coords.list, as.numeric)
+
+#tirar nomes
+
+names(coords.list.c) <- NULL
+
+set_key("AIzaSyBJvWBakWOood-eQEA-Ril2KlabUsIJww0") #minha
+set_key("AIzaSyD83AlVmEaky92OYhtJdySwWWNLcs9wVqg") #lara
+set_key("AIzaSyBYqV-oGivJMY_CB5eSClgnAVXfv0SwDrw") #franco1 #inutilizada
+set_key("AIzaSyD5ZAyj5if3nuqrbmtco7edxExc8OYm7rs") #franco2 #inutilizada
+set_key("AIzaSyDSGXCMVcDhckRPAdcxkxvWFE5n0r-kldU") #franco3 #inutilizada
+
+
+#continuar do 8!!!!!!!!!
+df <- google_distance(origins = coords.list.c[8],
+                      destinations = coords.list.c,
+                      mode = "driving",
+                      simplify = FALSE)
+View(df)
+
+# para simplify = FALSE -> a cada 15 linhas retorna o valor que eu quero (duration_in_traffic)
+
+tempos <- df[seq(from = 108, to = 1438, by = 15)]
+distancias <- df[seq(from = 100, to = 1422, by = 15)]
+
+# filtrar so os numeros
+final7 <- data.frame(origem = pontos_franco$ID[7], 
+                     destino = pontos_franco$ID,
+                     distancia = gsub(pattern = "[^0-9]+", replacement = "", x = distancias),
+                     tempo = gsub(pattern = "[^0-9]+", replacement = "", x = tempos))
+View(final6)
+
+# para simplificar:
+
+distancia_sleep <- function(x, ...) {
+  y <- google_distance(x, departure_time = as.POSIXct("2018-03-07 07:00:00"),...)
+  Sys.sleep(10)
+  y
+}
+
+final_1a25 <- map(coords.list.c[1:25], distancia_sleep, destinations = coords.list.c, mode = "driving", simplify = FALSE)
+
+# contar palavras
+
+length(grep("\\<duration\\>", final_21a25[["24"]]))
+
+teste <- grep("\\<duration_in_traffic\\>", final_1a5[["1"]], value=TRUE)
+teste <- grep("\\<distance\\>", final_1a5[["1"]])
+
+#extrair distancias e tempo de viagem
+
+pontos_final <- function (df) {
+  if (length(df) == 1438) {
+  tempos <- df[seq(from = 110, to = 1438, by = 15)]
+  distancias <- df[seq(from = 102, to = 1430, by = 15)]
+  
+  
+  } else if (length(df) == 1436) {
+  tempos <- df[seq(from = 108, to = 1430, by = 15)]
+  distancias <- df[seq(from = 100, to = 1430, by = 15)]
+
+  } 
+  
+  oris <- data.frame(destination = pontos_franco$ID,
+                      distancia = gsub(pattern = "[^0-9]+", replacement = "", x = distancias),
+                     tempo = gsub(pattern = "[^0-9]+", replacement = "", x = tempos))
+  return(oris)
+}
+
+#juntar todas as listas
+ai <- do.call(c, list(final_1a25,
+                      final_26a30, final_31a35, final_36a40, final_41a45, final_46a50,
+                      final_51a75, 
+                      final_76a89))
+
+#APLICAR FUNCAO
+oie <- purrr::map(ai, pontos_final)
+
+#juntar todos os dataframes (VERSAO FINAL)
+eita <- do.call(rbind, oie) %>%
+  mutate(origin = rep(pontos_franco$ID, each = 89)) %>%
+  select(origin, destination, distancia, tempo)
+
+write_csv(eita, "matriz_tempo_carro.csv")
+
+#usando stplanr para visualizar
+
+library(stplanr)
+library(sp)
+library(RColorBrewer)
+library(tmap)
+tmap_mode("view")
+
+palete <- brewer.pal(6, "Reds")
+
+#converter de sf para sp
+
+pontos_franco_sp <- as(pontos_franco, "Spatial")
+
+mapview::mapView(pontos_franco)
+
+od <- od2line(flow = eita[1:200,], zones = pontos_franco_sp)
+
+mapview::mapview(od, zcol = "tempo", lwd = 4)
+
+# e se eu quiser as rotas?
+
+routes <- line2route(od, route_fun = route_osrm)
+
+routes@data = cbind(routes@data, od@data)
+
+routes@data$tempo <- as.numeric(as.character(routes@data$tempo))
+
+mapview::mapview(routes, zcol = "tempo", legend = TRUE, color = palete, alpha=1) + 
+  mapview::mapView(pontos_franco_sp, zcol = NULL, cex = 2)
+
+# comparando os dados do google com os do openstreetmap
+
+google_vs_osmr <- data.frame(google = routes@data$tempo, osmr = routes@data$duration)
+
+```
+
+Utilizando o googleway para transporte publico (não vamos utilizar):
+
+```{r gway TP}
+library(googleway)
+
+#escolher uma
+set_key("AIzaSyBJvWBakWOood-eQEA-Ril2KlabUsIJww0") #minha
+set_key("AIzaSyD83AlVmEaky92OYhtJdySwWWNLcs9wVqg") #lara
+set_key("AIzaSyBYqV-oGivJMY_CB5eSClgnAVXfv0SwDrw") #franco1 #inutilizada
+set_key("AIzaSyD5ZAyj5if3nuqrbmtco7edxExc8OYm7rs") #franco2 #inutilizada
+set_key("AIzaSyDSGXCMVcDhckRPAdcxkxvWFE5n0r-kldU") #franco3 #inutilizada
+
+TP_1a5 <- map(coords.list.c[1:5], distancia_sleep, destinations = coords.list.c, mode = "transit", simplify = FALSE)
+
+
+```
+
+
+Os pontos passados são convertidos para o formato suportado pelo procedimento utilizado pelo OpenTripPlanner (colunas GEOID, Y, X).
+
+```{r pontos franco}
+
+#abrir pontos
+pontos_franco <- read.delim("pontos_franco.csv", sep= "\t")
+
+# criar um objeto sf com os pontos e o crs 32724 (WGS84 UTM 24S)
+pontos <- sf::st_as_sf(pontos_franco, coords = c("X", "Y"), crs = 32724)
+
+# transformar  para crs 4326
+pontos <- sf::st_transform(pontos, crs = 4326)
+
+
+#extrair as coordenadas
+pontoss <- st_coordinates(pontos)
+
+#transformar no formato do otp
+data.frame(GEOID = pontos_franco$ID, Y = pontoss[,"Y"], X = pontoss[,"X"]) %>%
+  readr::write_csv("points.csv")
+
+# abrir o resultado do otp
+
+vai <- readr::read_csv("traveltime_matrix.csv") %>%
+  mutate(tempo = travel_time/60)
+
+# explicacao
+
+http://dev.opentripplanner.org/javadoc/0.19.0/org/opentripplanner/routing/algorithm/RaptorStateStore.html
+
+```
+
