@@ -1,7 +1,9 @@
 ---
 title: "Calculo de Medidas de Desempenho"
-output: html_notebook
-editor_options: 
+output:
+  pdf_document: default
+  html_notebook: default
+editor_options:
   chunk_output_type: console
 ---
 ```{r setup, echo = FALSE, warning=FALSE, message=FALSE, error=FALSE}
@@ -13,56 +15,115 @@ library(purrr)
 library(data.table)
 library(readr)
 library(tidyr)
+library(ggplot2)
+library(forcats)
+library(hrbrthemes)
+
+source("R/funcoes_tratamento.R")
 ```
 
-# Quantidade de viagens utilizando o transporte coletivo por ônibus e por micro-ônibus (média das validações de dias úteis do ano de 2014 para o período entre 07:00 e 08:00)
+# Quantidade de viagens utilizando o transporte coletivo por ônibus e por micro-ônibus por tipo (média das validações de dias úteis do ano de 2014 para o período entre 07:00 e 08:00)
 
 ```{r}
 tabelas_resumo_int <- function(data) {
     data <- read_csv(data) %>%
+      mutate(momento = strftime(hora, format="%H:%M:%S", tz="UTC")) %>%
       filter(as.character(momento) >= "07:00:00" & as.character(momento) < "08:00:00")
     
-    data$nome_cartao <- iconv(data$nome_cartao, "UTF-8", "WINDOWS-1252")
+    data$nome_cartao <- iconv(data$nome_cartao,to="ASCII//TRANSLIT")
     
     dia_correto <- Mode(as.character(data$dia))
     
     data <- data %>%
-      mutate(hora1 = lubridate::hour(momento),
-             dia1 = lubridate::day(dia),
-             linha = as.factor(linha),
-             tipo = if_else(nome_cartao %in% c("04-VALE TRANSPORTE", "12-VALE-TRANPORTE AVULSO", 
-                                            "08-VT IDENTIFICAÇÃO", "08-VT IDENTIFICA<c3><87><c3><83>O"), "Vale Transporte",
-                if_else(nome_cartao %in% c("02-ESTUDANTE ETUFOR", "11-ESTUDANTE COM DEBITO"), 
-                                            "Estudante",
-                ifelse(nome_cartao %in% c("GRATUIDADE IDENTIFIC. ETUFOR", "03-GRATUIDADE IDOSO",
-                                          "GRAT. DEFICIENTE - C/ACOMP", "GRAT. DEFICIENTE - S/ACOMP"),
-                                          "Gratuidade", nome_cartao))))
+      mutate(hora1 = lubridate::hour(hora),
+             dia1 = lubridate::day(hora),
+             linha = as.factor(linha))
     
-  vai <- data %>%
-    group_by(integracao, tipo) %>%
+  #vai <- data %>%
+    #group_by(integracao, tipo_cartao) %>%
+    #summarise(n=n()) %>%
+    #spread(integracao, n, fill = 0) %>%
+    #select(tipo_cartao, viagens = N, viagens_int = S) %>%
+    #mutate(dia = dia_correto)
+  
+  vai_linha <- data %>%
+    group_by(integracao, tipo_cartao, nome_linha) %>%
     summarise(n=n()) %>%
     spread(integracao, n, fill = 0) %>%
-    select(tipo, viagens = N, viagens_int = S) %>%
+    select(tipo_cartao, nome_linha, viagens = N, viagens_int = S) %>%
     mutate(dia = dia_correto)
   
   
-return(vai)
+return(vai_linha)
 
 }
 
 # teste
 
-arquivos <- dir("data/bilhetagem", full.names = TRUE, pattern="*.csv")
+arquivos <- dir("data/bilhetagem/2015-03", full.names = TRUE, pattern="*.csv")
 
-bora <- lapply(arquivos, tabelas_resumo_int)
+arquivos_semana <- arquivos[c(2:5, 8:12, 15:19, 22:26, 29:30)]
+
+bora <- map(arquivos_semana, tabelas_resumo_int)
 
 # funcao para juntar todos os dataframes da lista em um dataframe so
 
-tudo <- dplyr::bind_rows(bora)
+tudo_linha <- dplyr::bind_rows(bora)
 
 # salvar
 
-write_csv(tudo, "data/bilhetagem/resumos/total_viagens_tipo.csv")
+#write_csv(tudo, "data/bilhetagem/resumos/total_viagens_tipo.csv")
+
+# criar tabela mais resumida com medias
+
+tudo_media <- tudo %>%
+  group_by(tipo_cartao) %>%
+  summarise(viagens = mean(viagens),
+            viagens_int = mean(viagens_int)) %>%
+  gather(tipo_viagem, n, viagens:viagens_int)
+
+tudo_media_linha <- tudo_linha %>%
+  group_by(tipo_cartao, nome_linha) %>%
+  summarise(viagens = mean(viagens),
+            viagens_int = mean(viagens_int)) %>%
+  gather(tipo_viagem, n, viagens:viagens_int)
+
+# visualizar
+
+# sem linha
+ggplot(tudo_media, aes(x = tipo_viagem, y=n))+
+  geom_col()+
+  facet_wrap(~tipo_cartao)+
+  theme_bw()
+
+ggplot(tudo_media, aes(x = fct_reorder(tipo_cartao, n, desc=FALSE), y=n))+
+  geom_col(color = "black", fill="tomato")+
+  facet_wrap(~tipo_viagem, scales = "free")+
+  theme_ipsum_rc(grid="Y")+
+  labs(y = "Quantidade de Viagens",
+       x = "Tipo de Cartão", 
+       title = "Quantidade Média de Viagens Por Tipo de Cartão",
+       subtitle = "Média dos dias úteis de março/2015",
+       caption = "Fonte: Dados de Bilhetagem")
+  #theme(text=element_text(size = 16, family="Arial Narrow"))
+
+# por linha
+
+tudo_media_linha %>% 
+  filter(tipo_viagem == "viagens") %>%
+  filter(row_number(desc(n)) <= 10 & n > 0) %>%
+  ggplot(aes(x=fct_reorder(nome_linha, n), y=n))+
+  geom_col(color = "black", fill="tomato")+
+  facet_wrap(~tipo_cartao, scales="free")+
+  theme_ipsum_rc(grid="X")+
+    labs(y = "Quantidade de Viagens",
+       x = "Linha", 
+       title = "Quantidade Média de Viagens Por Linha",
+       subtitle = "Média dos dias úteis de março/2015",
+       caption = "Fonte: Dados de Bilhetagem")+
+  coord_flip()
+  
+  
 
 ```
 
@@ -85,36 +146,6 @@ coords <- st_coordinates(pontos_franco) #extrair as coordenadas
 
 # extrair para dataframe
 coords <- data.frame(GEOID = pontos_franco$ID, Y = coords[,"Y"], X = coords[,"X"])
-
-# extrar para format entendido pelo googlemapsr
-points <- data.frame(origem = paste(coords$Y, coords$X, sep="+"))
-
-# permutar
-
-combinations <- t(combn(points$origem, 2)) %>%
-  as.data.frame()
-
-fim <- data.frame(origem = combinations$.[1:3916], destino = combinations$.[3917:7832])
-
-
-# usando gmapsdistance ----------------------------------------------------
-
-# dataframe que veio la das medidas_de_desempenho.Rmd
-coords <- fim[1:50,]
-
-set.api.key("AIzaSyBJvWBakWOood-eQEA-Ril2KlabUsIJww0")
-
-#deu certo
-
-tempos <- gmapsdistance(as.character(coords$origem), as.character(coords$destino), 
-                        mode = "transit", shape="long")
-
-# usando map2 (bem mais rapido)
-
-epa <- map2(coords$origem, coords$destino, gmapsdistance, mode="driving")
-
-aff <- dplyr::bind_rows(epa)
-
 
 # usando googleway --------------------------------------------------------
 
@@ -142,25 +173,6 @@ set_key("AIzaSyBYqV-oGivJMY_CB5eSClgnAVXfv0SwDrw") #franco1 #inutilizada
 set_key("AIzaSyD5ZAyj5if3nuqrbmtco7edxExc8OYm7rs") #franco2 #inutilizada
 set_key("AIzaSyDSGXCMVcDhckRPAdcxkxvWFE5n0r-kldU") #franco3 #inutilizada
 
-
-#continuar do 8!!!!!!!!!
-df <- google_distance(origins = coords.list.c[8],
-                      destinations = coords.list.c,
-                      mode = "driving",
-                      simplify = FALSE)
-View(df)
-
-# para simplify = FALSE -> a cada 15 linhas retorna o valor que eu quero (duration_in_traffic)
-
-tempos <- df[seq(from = 108, to = 1438, by = 15)]
-distancias <- df[seq(from = 100, to = 1422, by = 15)]
-
-# filtrar so os numeros
-final7 <- data.frame(origem = pontos_franco$ID[7], 
-                     destino = pontos_franco$ID,
-                     distancia = gsub(pattern = "[^0-9]+", replacement = "", x = distancias),
-                     tempo = gsub(pattern = "[^0-9]+", replacement = "", x = tempos))
-View(final6)
 
 # para simplificar:
 
@@ -231,7 +243,7 @@ pontos_franco_sp <- as(pontos_franco, "Spatial")
 
 mapview::mapView(pontos_franco)
 
-od <- od2line(flow = eita[1:200,], zones = pontos_franco_sp)
+od <- od2line(flow = filter(eita, origin == 100), zones = pontos_franco_sp)
 
 mapview::mapview(od, zcol = "tempo", lwd = 4)
 
@@ -293,7 +305,7 @@ data.frame(GEOID = pontos_franco$ID, Y = pontoss[,"Y"], X = pontoss[,"X"]) %>%
 
 # abrir o resultado do otp
 
-vai <- readr::read_csv("traveltime_matrix.csv") %>%
+vai <- readr::read_csv("matriz_tempo_transit.csv") %>%
   mutate(tempo = travel_time/60)
 
 # explicacao
