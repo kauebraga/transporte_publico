@@ -1,0 +1,162 @@
+---
+title: "Calculo de Estatisticas de Resumo"
+output: html_notebook
+---
+
+```{r setup, echo = FALSE, warning=FALSE, message=FALSE, error=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, error=FALSE)
+
+library(dplyr)
+library(sf) #pra importar os dados espaciais e tal
+library(data.table)
+library(readr)
+library(tidyr)
+```
+
+```{r tratamento inicial, cache=TRUE}
+arquivos <- dir("data/bilhetagem", pattern="*.csv", full.names = T)
+datas <- stringr::str_sub(arquivos, -14, -5)
+dias <- stringr::str_sub(arquivos, -6, -5)
+
+
+#deu certo
+
+tabelas_resumo <- function(data) {
+    
+    data <- read_csv(data)
+    
+    data <- data %>%
+      mutate(hora1 = lubridate::hour(momento),
+             dia1 = lubridate::day(dia),
+             linha = as.factor(linha))
+    #data <- data %>% filter(as.integer(dia1) == as.integer(dias[i]))
+    
+    #extrair data
+    dia_correto <- Mode(as.character(data$dia))
+    
+    #quantidade de viagens por usuario, dia, cartao, e linha
+    y <- data %>% count(id, dia1, nome_cartao, linha) %>% rename(N_v1 = n)
+    
+    #somatorio das viagens por dia, cartao e linha
+    a <- y %>% 
+      group_by(dia1, nome_cartao, linha) %>% 
+      summarise(N_usuarios=n(), 
+                total_viagens = sum(N_v1), 
+                media = format(mean(N_v1), scientific=FALSE))
+    
+    #quantide de viagens por dia, quantidade de viagens, cartao
+    z <- data %>% count(id, dia1, nome_cartao) %>% rename(N_v1 = n)
+    b <- z %>% count(dia1, N_v1, nome_cartao)
+    
+    x <- data %>% count(dia1,nome_cartao,hora1, linha)
+    
+    
+    assign(paste("Viagens_por_Hora", dia_correto, sep = '_'), x)
+    assign(paste("Viagens_por_ID", dia_correto, sep="_"), b)
+    assign(paste("Resumo", dia_correto, sep="_"), a)
+    
+    newList <- list(Viagens_por_Hora = x, Viagens_por_ID = b, Resumo = a)
+
+    
+}
+
+#aplicar funcao
+
+bora <- lapply(arquivos[1:2], tabelas_resumo)
+
+names(bora) <- datas[1:2]
+
+ahnao <- do.call(Map, c(rbind, bora))
+
+# funcao para salvar arquivos
+
+lapply(names(ahnao), function(x) {
+       x1 <- ahnao[[x]]
+       write_csv(x1, path = paste0("data/bilhetagem/resumos/", x, ".csv"))
+  })
+
+# juntando
+
+ai <- lapply(datas, function(x) paste("Viagens_por_Hora", x, sep="_"))
+oi <- lapply(datas, function(x) paste("Viagens_por_ID", x, sep="_"))
+ui <- lapply(datas, function(x) paste("Resumo", x, sep="_"))
+
+viagens_por_hora <- do.call("write_csv", lapply(ai, get))
+viagens_por_id <- do.call("rbind", lapply(oi, get)) #juntos
+resumo <- do.call("rbind", lapply(ui, get))
+
+#deletar os dataframes inutes
+rm(list=unlist(ai))
+rm(list=unlist(oi))
+rm(list=unlist(ui))
+rm(ai, oi, ui, x, z, a)
+
+#tirar acentos, cedilhas e coisas mais
+viagens_por_id$Nome_Cartao <- iconv(viagens_por_id$Nome_Cartao, "UTF-8", "WINDOWS-1252")
+viagens_por_hora$Nome_Cartao <- iconv(viagens_por_hora$Nome_Cartao, "UTF-8", "WINDOWS-1252")
+
+#criar variavel "tipo", com o tipo do pagamento, e variavel "viagens"
+viagens_por_id <- viagens_por_id %>% 
+  mutate(Tipo = if_else(Nome_Cartao %in% c("04-VALE TRANSPORTE", "12-VALE-TRANPORTE AVULSO", 
+                                            "08-VT IDENTIFICAÇÃO"), "Vale Transporte",
+                if_else(Nome_Cartao %in% c("02-ESTUDANTE ETUFOR", "11-ESTUDANTE COM DEBITO"), 
+                                            "Estudante",
+                ifelse(Nome_Cartao %in% c("GRATUIDADE IDENTIFIC. ETUFOR", "03-GRATUIDADE IDOSO",
+                                          "GRAT. DEFICIENTE - C/ACOMP", "GRAT. DEFICIENTE - S/ACOMP"),
+                                          "Gratuidade", Nome_Cartao))),
+          Viagens = ifelse(N_v1 >=6, "6+", N_v1))
+
+viagens_por_hora <- viagens_por_hora %>% 
+  mutate(Tipo = if_else(Nome_Cartao %in% c("04-VALE TRANSPORTE", "12-VALE-TRANPORTE AVULSO", 
+                                            "08-VT IDENTIFICAÇÃO"), "Vale Transporte",
+                if_else(Nome_Cartao %in% c("02-ESTUDANTE ETUFOR", "11-ESTUDANTE COM DEBITO"), 
+                                            "Estudante",
+                ifelse(Nome_Cartao %in% c("GRATUIDADE IDENTIFIC. ETUFOR", "03-GRATUIDADE IDOSO",
+                                          "GRAT. DEFICIENTE - C/ACOMP", "GRAT. DEFICIENTE - S/ACOMP"),
+                                          "Gratuidade", Nome_Cartao))))
+
+```
+
+E se fossemos considerar a integracao?
+
+```{r resumo com integracao}
+
+tabelas_resumo_int <- function(data) {
+    data <- read_csv(data)
+    
+    data <- data %>%
+      mutate(hora1 = lubridate::hour(momento),
+             dia1 = lubridate::day(dia),
+             linha = as.factor(linha))
+    #data <- data %>% filter(as.integer(dia1) == as.integer(dias[i]))
+    
+    #extrair data
+    dia_correto <- Mode(as.character(data$dia))
+    
+  vai <- data %>%
+    group_by(id, integracao) %>%
+    summarise(n=n()) %>%
+    spread(integracao, n, fill = 0) %>%
+    select(id, viagens = N, viagens_int = S) %>%
+    mutate(viagens1 = ifelse(viagens >=4, "4+", as.character(viagens)),
+           viagens_int1 = ifelse(viagens_int >=4, "4+", as.character(viagens_int))) %>%
+    mutate(viagens_junto = paste(viagens1, " viagens + ", viagens_int1,  " integracoes", sep=""))
+
+vai_sumario <- vai %>%
+  group_by(viagens1, viagens_junto) %>%
+  summarise(freq_viagens = n()) %>%
+  mutate(soma_total = sum(freq_viagens))
+  #mutate(proporcao = scales::percent(freq_viagens/soma_total))
+
+lista <- list(vai = vai, vai_sumario = vai_sumario)
+
+}
+
+#teste 
+
+data <- read_csv("data/bilhetagem/bilhetagem_2015-03-01.csv")
+
+egua <- lapply(arquivos[1:3], tabelas_resumo_int)
+
+```
+
