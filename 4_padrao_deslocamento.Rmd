@@ -1,0 +1,314 @@
+---
+title: "Construcao de Matriz OD"
+author: "MITUS"
+date: '`r Sys.Date()`'
+output:
+  html_notebook:
+    fig_caption: yes
+    number_sections: yes
+    theme: journal
+  html_document:
+    fig_caption: yes
+    number_sections: yes
+    theme: journal
+    toc: yes
+    toc_float:
+      collapsed: no
+      smooth_scroll: no
+  pdf_document:
+    fig_caption: yes
+    number_sections: yes
+    toc: yes
+editor_options:
+  chunk_output_type: console
+---
+```{r setup, echo = FALSE, warning=FALSE, message=FALSE, error=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, error=FALSE)
+
+library(ggplot2)
+library(dplyr)
+#library(ggmap) #função geocode() pra extrair as coordenadas dos endereços
+library(sf) #pra importar os dados espaciais e tal
+library(data.table)
+library(knitr)
+library(readr)
+library(tidyr)
+#library(extrafont)
+#extrafont::loadfonts(device="win")
+
+```
+
+# Objetivos
+
+Meus principais objetivos sao:  
+
+- Ser feliz
+- Me organizar
+- Outra coisa
+
+# Metodologia  
+
+A metodologia estabelecida foi a seguinte:
+
+1) Estabelecer hipoteses sobre o padrao de deslocamento dos usuarios
+1) Testar essas hipoteses
+1) Determinar os locais de validacao mais cedo na semana
+
+
+# Construcao da matriz
+
+## Hipoteses sobre o padrao de deslocamento dos usuarios  
+
+Estabelecer hipóteses sobre o comportamento do usuário de transporte público em relação ao seu padrão de deslocamento, por exemplo:
+
+- O usuário que realiza uma viagem vai ou volta de transporte público, voltando e ou indo de carona ou qualquer outro modal;
+- O usuário que realiza duas viagens vai pela manhã (de 5h as 9h) e volta em qualquer outro horário diferente da ida;  
+- O usuário que realiza três viagens vai para o primeiro compromisso (emprego), e depois de algum tempo vai para outro compromisso, voltando para casa no fim do dia;
+- O usuário que realiza quatro viagens vai para o primeiro compromisso, depois vai para um compromisso intermediário (pode voltar para casa, por exemplo) e depois se dirige ao seu segundo compromisso (segundo emprego, supostamente), voltando para casa ao fim do dia.  
+
+ATENÇÃO: é importante frizar que a quantidade de viagens aqui definidas são somente viagens que não são integração. Viagens do tipo integração são consideradas viagens de um tipo diferente, sendo uma continuidade das viagens acima definidas.
+
+A metodologia estabelecida para o teste dessas hipóteses ainda precisa se definida, mas a priori será pegar todos os usuários que realizam 2 viagens, e analisar o padrão horário de deslocamento, e suas localizações. Fazer o mesmo para 3 e 4 viagens.
+
+Posteriormente, pretende-se fazer uma análise da rede de transportes, analisando se é possível o usuário, pegando aquela linha na "suposta" ida e suposta volta, fazer o trajeto de ida e volta para casa.
+
+### Padrao de deslocamento
+
+```{r abrir 1 dia, cache= TRUE}
+
+#abrir
+bum <- read_csv("data/bilhetagem_integrado/bilhetagemintegrado_2015-03-04.csv")
+
+#tirar inteiras
+bum <- bum %>% filter(id !=0) %>% arrange(id, hora)
+```
+
+Primeiramente, eh necessaria ser feita uma filtragem inicial dos dados, apagando inconsistencias que podem ser encontradas tanto no comportamento do usuario como no comportamento da tecnologia que coleta os dados. Os seguintes casos vao ser tratados e analisados:
+
+- Ha casos em que usuarios realizam uma viagem de integracao porem a tecnologia nao as detecta assim. Portanto, sera identificado onde aconteceu uma integracao (uma diferenca menor que 2h entre validacoes), e essas serao corrigidas. ***Nessa correcao, eh preciso identificar em que casos realmente foi uma integracao e em que casos o usuario foi e voltou num intervalo menor que 2h***;  
+- Ha casos em que, erroneamente, o usuario passa o cartao duas vezes. Assim, serao identificadas viagens onde isso aconteceu, com o usuario passando validando duas vezes em um pequeno intervalo de tempo (aqui determinado como 1 minuto) na mesma linha e no mesmo sentido. *Isso ja sera deletado na etapa passada*.
+
+Na exploracao dos dados, foram identificados casos em que o usuario apresentava um perfil claro de um deslocamento pendular (primeira viagem pela manha, segunda no fim da tarde) e ainda sim as duas viagens apresentavam a mesma linha com o mesmo sentido. Entende-se, entao, por enquanto, que eh possivel sim um usuario realizar uma viagem pendular pegando a mesma linha com o mesmo sentido na viagem de ida e de volta.
+
+
+```{r filtragem inicial}
+#aqui analisar:
+# - usuario que passa o cartao duas vezes se querer
+# - usuario que pega dois onibus num intervalo de menos de 2h porem nao eh considerado integracao
+
+#aparentemente, ha muitos usuarios que vao e voltam na mesma linha com o mesmo sentido!
+
+bum <- bum %>%
+  mutate(linha.sentido = paste(linha, sentido_viagem, sep=".")) %>%
+  group_by(id) %>%
+  mutate(dif.tempo = (hora - lag(hora, default = 100000))/3600) %>%
+  ungroup()
+
+#pegar aqueles somente em que a mesma linha da ida eh a mesma linha da volta e o tempo entre viagens eh menos de 2h
+#bum_dif <- bum %>% group_by (id) %>% filter(linha.sentido == lag(linha.sentido) & dif.tempo < 0.1)
+
+#tirar o dataframe acima do original e tirar as com menos de 1h
+#bum_novo <- bum %>% setdiff(bum_dif) %>% group_by(id) %>% filter(dif.tempo <2)
+
+#ou simplesmente fazer isso
+bum_novo <- bum %>% group_by(id) %>% filter(dif.tempo > 2) %>% ungroup()
+```
+
+### Distribuicao dos tempos entre viagens
+
+A distribuicao dos tempos entre viagens acontece de acordo com o observado na figura abaixo.
+
+```{r tempos de viagem}
+
+bum_novo <- bum_novo %>% mutate(dif.tempo = ifelse(dif.tempo < 24, dif.tempo, NA))
+
+ggplot(bum_novo, aes(x=dif.tempo))+
+  geom_histogram(color = "black", fill="grey85")+
+  theme_bw(base_family = "Arial Narrow")+
+  labs(title = "Distribuicao dos tempos entre viagens (validações) dos usuarios", subtitle = "Dados de 04 de marco de 2015",
+       x="Tempo (horas)", y="Frequencia")+
+  scale_x_continuous(breaks=seq(0, 20, 2))
+
+```
+
+
+
+``` {r tratar 1 dia, cache=TRUE}
+
+vai <- bum_novo %>%
+  group_by(id, integracao) %>%
+  summarise(n=n()) %>%
+  spread(integracao, n, fill = 0) %>%
+  select(id, viagens = N, viagens_int = S) %>%
+  mutate(viagens1 = ifelse(viagens >=4, "4+", as.character(viagens)),
+         viagens_int1 = ifelse(viagens_int >=4, "4+", as.character(viagens_int))) %>%
+  mutate(viagens_junto = paste(viagens1, " viagens + ", viagens_int1,  " integracoes", sep=""))
+
+vai_sumario <- vai %>%
+  group_by(viagens1, viagens_junto) %>%
+  summarise(freq_viagens = n()) %>%
+  mutate(soma_total = sum(freq_viagens)) %>%
+  mutate(proporcao = scales::percent(freq_viagens/soma_total))
+```
+
+Eh assim mais ou menos as proporcoes:
+
+```{r visualizar}
+
+#ggplot(vai_sumario, aes(x=factor(viagens_junto), y=freq_viagens, fill=factor(viagens_junto)))+
+  #geom_col()+
+  #facet_wrap(~viagens1, scales="free", nrow=2)+
+  #theme(axis.text.x=element_blank())
+
+knitr::kable(vai_sumario)
+
+```
+
+Analisando os usuarios que realizam ``duas viagens``, observam-se dois picos de viagens: um no horario da manha, proximo das das 6 da manha, e outro no final da tarde e no inicio da noite, entre 17h e 18. Essa analise nos permite validar a hipotese de que para usuarios que realizam 2 viagens ha um padrao da maioria da ide acontecendo pela manha e volta acontecendo no periodo da tarde.
+
+```{r duas viagens}
+vai2 <- filter(vai, viagens==2) #Extraindo usu?rios
+
+bum_2viagens <- bum_novo %>%
+  filter(id  %in% vai2$id) %>% 
+  filter(integracao == "N") %>%
+  arrange(id, hora) %>%
+  mutate(viagem_id = rep(1:2, times=length(id)/2))
+
+ggplot(bum_2viagens, aes(x=hora))+
+  geom_histogram(bins=25, position="identity", color="black", fill="grey85")+
+  theme_bw()+
+  facet_wrap(~factor(viagem_id), nrow=3)+
+  scale_x_datetime(date_labels = "%H:%M", date_breaks = "2 hours")
+
+```
+
+Analisando os usuarios que realizam ``tres`` viagens, observa-se que a primeira viagem ocorre com maior frequencia no periodo de pico manha, com a segunda viagem ocorrendo com dois picos semelhante proximo da hora das 12h e proximo das 16h, com a terceira viagem com um pico maior as 18h, mas se extendendo um pouco mais ate as 22h.
+
+```{r tres viagens}
+
+vai3 = filter(vai, viagens==3) #Extraindo usu?rios
+
+bum_3viagens = bum_novo %>%
+  filter(id  %in% vai3$id) %>% 
+  filter(integracao == "N") %>%
+  arrange(id, hora) %>%
+  mutate(viagem_id = rep((1:3), times=length(id)/3))
+
+ggplot(bum_3viagens, aes(x=hora))+
+  geom_histogram(bins=25, position="identity", color="black", fill="grey85")+
+  theme_bw()+
+  facet_wrap(~factor(viagem_id), nrow=3)+
+  scale_x_datetime(date_labels = "%H:%M", date_breaks = "2 hours")
+```
+
+Para os usuarios que realizam ``quatro viagens``,
+
+```{r quatro viagens, fig.cap = "que beleeeeeeeza de grafico meus amigos..."}
+vai4 = filter(vai, viagens==4) #Extraindo usu?rios
+
+bum_4viagens = bum_novo %>%
+  filter(id  %in% vai4$id) %>% 
+  filter(integracao == "N") %>%
+  arrange(id, hora) %>%
+  mutate(viagem_id = rep((1:4), times=length(id)/4))
+
+ggplot(bum_4viagens, aes(x=hora))+
+  geom_histogram(bins=25, position="identity", color="black", fill="grey85")+
+  theme_bw()+
+  facet_wrap(~factor(viagem_id), nrow=4)+
+  scale_x_datetime(date_labels = "%H:%M", date_breaks = "2 hours")+
+  labs(title="Distribuicao dos usuarios que realizam quatro viagens")
+
+```
+
+## Criterios estabelecidos para construcao da matriz
+
+Foi determinado que a matriz a ser construida representara somente os deslocamentos que aconteceram no pico da manha, aqui determinado como sendo entre ``5h e 9h``. Esse intervalo maior do pico da manha se deve justamente ao foto de alguns usuarios validarem sua passada na catraca somente mais tarde. Com a ajuda dos teste das hipoteses estabelecidas na etapa anterior, alguns criterios iniciais sao estabelecidos para a construcao da matriz origem destino:  
+
+- Como ja foi dito anteriormente, somente serao analisados usuario que realizaram a sua primeira viagem entre 5h e 9h, sendo essa viagem considerada como a ``ida``;  
+- Para os usuarios que so realizaram ``duas viagens``, a viagem que nao for a ida sera considerada como sendo sua ``volta``;  
+- Para os usuarios que realizaram ``tres viagens ou mais``, a sua segunda viagem sera considerada como a volta, visto que ela identificara o destino da primeira viagem dele, que ocorreu entre 5h e 9h;  
+
+Ainda nao sera feita nenhuma analise da rede, se eh posivel o usuario ir na linha que esta indo e voltando na linha que esta voltando, mas alguns casos sao possiveis de serem identificados de cara, e serao deletados:  
+
+- Usuarios que pegaram a mesma linha no mesmo sentindo tanto na ida como na volta; isso muitas vezes acontece porque o usuario passa o cartao duas vezes e nao percebe;  
+
+## Determinar os locais de validacao mais cedo
+
+Essa parte, por enquanto, sera feita somente para estimar o local de validacao mais cedo da viagem de ``ida``.
+
+```{r abrir 1 semana, eval=FALSE, cache=TRUE, include=FALSE}
+
+data_semana <- read_csv("../bilhetagem/data/bilhetagem_201504_semana1.csv",
+                                col_names =TRUE, col_types = cols(hora = col_datetime(),
+                                                                  dia = col_date(),
+                                                                  momento = col_character()))
+#NAO FAZER ESSA PARTE AINDA
+#####
+vai_semana <- data_semana %>%
+  group_by(id, integracao) %>%
+  summarise(n=n()) %>%
+  spread(integracao, n, fill = 0) %>%
+  select(id, viagens = N, viagens_int = S) %>%
+  mutate(viagens1 = ifelse(viagens >=4, "4+", as.character(viagens)),
+         viagens_int1 = ifelse(viagens_int >=4, "4+", as.character(viagens_int))) %>%
+  mutate(viagens_junto = paste(viagens1, " viagens + ", viagens_int1,  " integracoes", sep=""))
+
+vai_sumario_semana <- vai_semana %>%
+  group_by(viagens1, viagens_junto) %>%
+  summarise(freq_viagens = n()) %>%
+  mutate(soma_total = sum(freq_viagens)) %>%
+  mutate(proporcao = scales::percent(freq_viagens/soma_total))
+#####
+
+# -- e que tal analisar somente o pico manha? (extrair somente usuarios que realizaram primeira
+#-- viagem pela manha)
+
+#identificar as viagens feitas no pico manha
+data_pico_manha <- data_semana %>% 
+  filter(between(momento, "05:00:00", "09:00:00")) %>% 
+  arrange(id,dia)
+
+#extrair somente viagens  dos usuarios que realizam viagens no pico manha, identificar tipo
+data_semana_v1 <- data_semana %>% 
+  filter(id %in% data_pico_manha$id) %>% 
+  arrange(id) %>%
+  filter(integracao == "N") %>%
+  mutate(tipo = if_else(between(momento, "05:00:00", "09:00:00"), "Ida", "Outro"),
+        momento_itime = as.ITime(hora, format="%d/%m/%Y %H:%M:%S"))
+
+# -- IDENTIFICAR O HORARIO MAIS CEDO EM QUE O USUARIO FEZ A VALIDACAO
+
+#aqui, talvez seja melhor analisar por quantidade de viagens (2, 3, 4, sem integracao)
+
+#tirar o momento mais cedo (por usuario e por ida e volta)
+hora_minima <- data_semana_v1 %>% 
+  group_by(id, tipo) %>% 
+  slice(which.min(momento_itime)) %>%
+  select(id, linha, tipo, hora, momento) %>%
+  filter(tipo == "Ida") #opaaaa
+
+# - duas viagens
+################
+
+bum_2viagens = bum_2viagens %>%
+  mutate(tipo = if_else(between(momento, "05:00:00", "09:00:00"), "Ida", "Volta"))
+
+#extrair somente os que realizam a ida no periodo da manha
+sem_manha <- bum_2viagens %>% group_by(id) %>% filter(tipo != lag(tipo)) #pegar os com ida e volta
+
+#tem que bater o id, o tipoe a linha                                                          
+bum_2viagens_v1 <- bum_2viagens %>% 
+  filter(id %in% sem_manha$id) %>%
+  left_join(hora_minima, by=c("id", "tipo", "linha")) %>% 
+  mutate(dif = as.ITime(momento.x) - as.ITime(momento.y),
+        hora.final = as.POSIXct(ifelse(is.na(hora.y), hora.x, hora.y), origin='1970-01-01'))
+
+ggplot(bum_2viagens_v1, aes(x=nome_cartao, y = dif/60, color=nome_cartao))+
+  geom_jitter(alpha=0.3)+
+  theme(axis.text.x = element_blank())
+
+```
+
+
