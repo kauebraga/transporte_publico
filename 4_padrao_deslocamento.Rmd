@@ -25,14 +25,18 @@ editor_options:
 ```{r setup, echo = FALSE, warning=FALSE, message=FALSE, error=FALSE}
 knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, error=FALSE)
 
+library(sp)
 library(ggplot2)
 library(dplyr)
+library(sf)
+library(mapview)
 #library(ggmap) #função geocode() pra extrair as coordenadas dos endereços
 library(sf) #pra importar os dados espaciais e tal
 library(data.table)
 library(knitr)
 library(readr)
 library(tidyr)
+library(hrbrthemes)
 #library(extrafont)
 #extrafont::loadfonts(device="win")
 
@@ -118,20 +122,22 @@ bum_novo <- bum %>% group_by(id) %>% filter(dif.tempo > 2) %>% ungroup()
 
 A distribuicao dos tempos entre viagens acontece de acordo com o observado na figura abaixo.
 
-```{r tempos de viagem}
+```{r tempos entre viagens}
 
 bum_novo <- bum_novo %>% mutate(dif.tempo = ifelse(dif.tempo < 24, dif.tempo, NA))
 
+median(bum_novo$dif.tempo, na.rm = TRUE)
+
 ggplot(bum_novo, aes(x=dif.tempo))+
-  geom_histogram(color = "black", fill="grey85")+
-  theme_bw(base_family = "Arial Narrow")+
+  geom_histogram(color = "black", fill="grey85", bins = 21)+
+  theme_ipsum_rc(grid = "Y")+
   labs(title = "Distribuicao dos tempos entre viagens (validações) dos usuarios", subtitle = "Dados de 04 de marco de 2015",
        x="Tempo (horas)", y="Frequencia")+
   scale_x_continuous(breaks=seq(0, 20, 2))
 
 ```
 
-
+Agora vamos tratar esse dia:
 
 ``` {r tratar 1 dia, cache=TRUE}
 
@@ -155,12 +161,87 @@ Eh assim mais ou menos as proporcoes:
 
 ```{r visualizar}
 
-#ggplot(vai_sumario, aes(x=factor(viagens_junto), y=freq_viagens, fill=factor(viagens_junto)))+
-  #geom_col()+
-  #facet_wrap(~viagens1, scales="free", nrow=2)+
-  #theme(axis.text.x=element_blank())
+vai_sumario %>%
+  group_by(viagens1) %>%
+  summarise(total = sum(freq_viagens)) %>%
+    ggplot(aes(x = viagens1, y = total))+
+    geom_col(color = "black", fill="grey85")+
+    theme_ipsum_rc(grid = "Y")
+  
+
+ggplot(vai_sumario, aes(x=factor(viagens1), y=freq_viagens, fill=factor(viagens_junto)))+
+  geom_col()+
+  facet_wrap(~viagens1, scales="free", nrow=2)+
+  theme_ipsum_rc()+
+  theme(axis.text.x=element_blank())
 
 knitr::kable(vai_sumario)
+
+```
+
+Como se comporta o cara que só realiza uma viagem? Há a possibilidade desses usuários que realizam somente uma viagem em um dia realizarem a ida num dia a e volta no outro. Usuários que trabalham no período da noite, por exemplo.
+
+```{r uma viagem}
+vai1 <- filter(vai, viagens==1) #Extraindo usu?rios
+
+bum_1viagem <- bum_novo %>%
+  filter(id  %in% vai1$id) %>% 
+  filter(integracao == "N") %>%
+  arrange(id, hora) %>%
+  mutate(viagem_id = rep(1, times=length(id)))
+
+ggplot(bum_1viagem, aes(x=hora))+
+  geom_histogram(bins=25, position="identity", color="black", fill="grey85")+
+  theme_ipsum_rc(grid="Y")+
+  facet_wrap(~factor(viagem_id), nrow=3, scales = "free")+
+  scale_x_datetime(date_labels = "%H:%M", date_breaks = "2 hours")+
+  labs(title = "Distribuição dos usuários que realizam uma viagem", 
+       subtitle = "Dados de de 04 de março de 2015", 
+       caption = "Fonte: Dados de bilhetagem eletrônica")
+
+#visualizar no mapa
+bum_1viagem %>%
+  st_as_sf(coords = c("lon", "lat"), crs = 4326) %>%
+  select(id) %>%
+  slice(1:5000) %>%
+  mapView()
+
+# visualizar por zonas
+
+overlay <- function(x, y, lon = "lon", lat = "lat") {
+  
+  zonas_sf <- st_read(y, quiet=TRUE, stringsAsFactors = F, promote_to_multi = FALSE)
+  zonas_sf <- mutate(zonas_sf, id_zona = 1:rep(nrow(zonas_sf)))
+  zonas <- sf::as_Spatial(zonas_sf$geometry)
+  x <- filter(x, !is.na(id))
+  coords <- select(x, lon, lat)
+  
+  coordinates(coords) <- ~ lon + lat
+  
+  proj4string(coords) <- proj4string(zonas)
+  
+  uai <- over(coords, zonas)
+  
+  x <- x %>%
+    mutate(id_zona = uai) %>%
+    group_by(id_zona) %>% 
+    summarise(Total = n()) %>%
+    left_join(select(zonas_sf, id_zona)) %>%
+    st_as_sf()
+  
+  
+  return(x)
+    
+}
+
+novo <- overlay(bum_1viagem, "data/setor_censitario_v1")
+
+ggplot()+
+  geom_sf(data=novo, aes(fill=Total))+
+  scale_fill_gradient(low = "grey95", high = "firebrick4", space = "Lab",
+                      na.value = "black")+
+  theme_void()+
+  theme(legend.position = "bottom")
 
 ```
 
@@ -177,9 +258,12 @@ bum_2viagens <- bum_novo %>%
 
 ggplot(bum_2viagens, aes(x=hora))+
   geom_histogram(bins=25, position="identity", color="black", fill="grey85")+
-  theme_bw()+
-  facet_wrap(~factor(viagem_id), nrow=3)+
-  scale_x_datetime(date_labels = "%H:%M", date_breaks = "2 hours")
+  theme_ipsum_rc(grid="Y")+
+  facet_wrap(~factor(viagem_id), nrow=3, scales = "free")+
+  scale_x_datetime(date_labels = "%H:%M", date_breaks = "2 hours")+
+  labs(title = "Distribuição dos usuários que realizam duas viagens", 
+       subtitle = "Dados de de 04 de março de 2015", 
+       caption = "Fonte: Dados de bilhetagem eletrônica")
 
 ```
 
@@ -197,7 +281,7 @@ bum_3viagens = bum_novo %>%
 
 ggplot(bum_3viagens, aes(x=hora))+
   geom_histogram(bins=25, position="identity", color="black", fill="grey85")+
-  theme_bw()+
+  theme_ipsum_rc(grid = "Y")+
   facet_wrap(~factor(viagem_id), nrow=3)+
   scale_x_datetime(date_labels = "%H:%M", date_breaks = "2 hours")
 ```
@@ -215,7 +299,7 @@ bum_4viagens = bum_novo %>%
 
 ggplot(bum_4viagens, aes(x=hora))+
   geom_histogram(bins=25, position="identity", color="black", fill="grey85")+
-  theme_bw()+
+  theme_ipsum_rc(grid = "Y")+
   facet_wrap(~factor(viagem_id), nrow=4)+
   scale_x_datetime(date_labels = "%H:%M", date_breaks = "2 hours")+
   labs(title="Distribuicao dos usuarios que realizam quatro viagens")
@@ -223,6 +307,8 @@ ggplot(bum_4viagens, aes(x=hora))+
 ```
 
 ## Criterios estabelecidos para construcao da matriz
+
+TRIP CHANING METHOD!!!!!!!!!!!!!!!!!!!!!!!!!
 
 Foi determinado que a matriz a ser construida representara somente os deslocamentos que aconteceram no pico da manha, aqui determinado como sendo entre ``5h e 9h``. Esse intervalo maior do pico da manha se deve justamente ao foto de alguns usuarios validarem sua passada na catraca somente mais tarde. Com a ajuda dos teste das hipoteses estabelecidas na etapa anterior, alguns criterios iniciais sao estabelecidos para a construcao da matriz origem destino:  
 
@@ -240,10 +326,17 @@ Essa parte, por enquanto, sera feita somente para estimar o local de validacao m
 
 ```{r abrir 1 semana, eval=FALSE, cache=TRUE, include=FALSE}
 
-data_semana <- read_csv("../bilhetagem/data/bilhetagem_201504_semana1.csv",
-                                col_names =TRUE, col_types = cols(hora = col_datetime(),
-                                                                  dia = col_date(),
-                                                                  momento = col_character()))
+data_semana <- read_csv("data/bilhetagem_integrado/bilhetagemintegrado_2015-03.csv")
+
+# testando ne
+
+ggplot(data_semana, aes(x=hora))+
+  geom_histogram()+
+  theme_ipsum_rc()+
+  facet_wrap(~dia, scales="free")
+
+
+
 #NAO FAZER ESSA PARTE AINDA
 #####
 vai_semana <- data_semana %>%
@@ -280,9 +373,9 @@ data_semana_v1 <- data_semana %>%
 
 # -- IDENTIFICAR O HORARIO MAIS CEDO EM QUE O USUARIO FEZ A VALIDACAO
 
-#aqui, talvez seja melhor analisar por quantidade de viagens (2, 3, 4, sem integracao)
+# aqui, talvez seja melhor analisar por quantidade de viagens (2, 3, 4, sem integracao)
 
-#tirar o momento mais cedo (por usuario e por ida e volta)
+# tirar o momento mais cedo (por usuario e por ida e volta)
 hora_minima <- data_semana_v1 %>% 
   group_by(id, tipo) %>% 
   slice(which.min(momento_itime)) %>%
